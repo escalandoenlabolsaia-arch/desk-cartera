@@ -295,7 +295,7 @@ def main():
     if topic:
         try:
             enviar_ntfy(topic, mensaje,
-                        titulo=f"Board — {tipo}: {ticker_objetivo or 'estructura'}")
+                        titulo=f"Board - {tipo}: {ticker_objetivo or 'estructura'}")
             print("ntfy: deliberacion enviada")
         except Exception as e:
             print(f"  AVISO: ntfy fallo ({type(e).__name__}); la corrida sigue")

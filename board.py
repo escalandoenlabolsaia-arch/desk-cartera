@@ -11,7 +11,8 @@ la cartera -> JAMAS van al log publico. Al log sale solo un conteo
 abstracto (sin tickers ni perfiles asociados). El contenido completo viaja
 unicamente por ntfy privado.
 
-Resiliencia: cada llamada con reintentos; si un agente falla, ese perfil
+Resiliencia: cada llamada a Groq degrade a None si falla (con el detalle
+del error en el log para diagnosticar); si un agente falla, ese perfil
 queda 'sin deliberacion' y los demas siguen. Nunca se inventa un veredicto.
 """
 
@@ -41,8 +42,8 @@ def cargar_modelo():
 # --------------------------------------------------------------- groq
 def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
     """Una llamada al modelo. Devuelve texto o None (falla -> None, la
-    deliberacion degrada). reasoning_effort low: los gpt-oss razonan y
-    hay que dejarles presupuesto de salida."""
+    deliberacion degrada). El log muestra el detalle del error (401 = key
+    mala, 404 = modelo no disponible, 429 = limite de velocidad)."""
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -62,7 +63,7 @@ def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
         r.raise_for_status()
         return (r.json()["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
-                print(f"  Groq fallo: {e}")
+        print(f"  Groq fallo: {e}")
         return None
 
 
@@ -147,7 +148,7 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
         consenso = "sin sentencias validas"
 
     # ---- mensaje privado (contenido completo, con datos de cartera) ----
-    l = [f"🎭 BOARD — {trigger_log}", "─────────────────────────────"]
+    l = [f"BOARD — {trigger_log}", "-----------------------------"]
     for r in resultados:
         e, nombre = r["emoji"], r["perfil"].upper()
         v = r.get("veredicto")
@@ -161,11 +162,11 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
                                    if not x.strip().upper().startswith("VEREDICTO:"))
                 l.append(cuerpo)
             if r.get("toro"):
-                l.append(f"  ↳ toro: {r['toro']}")
+                l.append(f"  -> toro: {r['toro']}")
             if r.get("oso"):
-                l.append(f"  ↳ oso: {r['oso']}")
+                l.append(f"  -> oso: {r['oso']}")
         l.append("")
-    l.append(f"🎯 {consenso}")
+    l.append(f"CONSENSO: {consenso}")
     mensaje = "\n".join(l)
 
     # ---- linea de log PUBLICO: conteo abstracto, sin tickers ni perfiles ----

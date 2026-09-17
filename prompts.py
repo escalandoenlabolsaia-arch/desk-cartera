@@ -2,89 +2,100 @@
 """
 prompts.py — Las personalidades de los 9 agentes del board (el nieto).
 
-Estructura: TORO (argumento a favor) -> OSO (lee al toro y responde en
-contra) -> JUEZ (lee todo + reglas del perfil y sentencia). Cada perfil
-(conservador/moderado/agresivo) tiene su propia filosofia, y cada rol su
-mision. La aritmetica la hizo Python en el expediente: los agentes debaten
-QUE HACER, nunca recalculan numeros. Prohibido inventar datos: solo citar
-los del expediente.
+v2 (post-estreno, con la leccion de la primera deliberacion):
+- TONO: analista senior que le explica a un colega. Prosa clara, frases
+  cortas, maximo 2-3 numeros bien elegidos, sin listas de metricas,
+  sin jerga de alerta, sin tecnicismos contables.
+- SECTORES: prohibido hablar de concentracion o rotacion sin NOMBRAR el
+  sector y su peso (leccion del pseudo-'sector n/d 57.21%').
+- El oso siempre ataca (deliberacion adversarial de diseno) pero bajo la
+  MISMA filosofia del perfil.
+- El juez no esquiva: elige ACCIONAR/ESPERAR/REVISAR y su sentencia es el
+  parrafo central del informe.
 
-Formato de salida del juez: termina con la linea literal 'VEREDICTO: X'
-donde X es ACCIONAR / ESPERAR / REVISAR (vocabulario cerrado; Python lo
-parsea para calcular la unanimidad del board).
+Formato de salida del juez: debe incluir el veredicto como 'VEREDICTO: X'
+(puede ir en linea propia o al final del parrafo: el parser lo busca en
+todo el texto). X es ACCIONAR / ESPERAR / REVISAR (vocabulario cerrado).
 
-Estilo de la casa (herencia de madre e hijo): tono esceptico, espanol,
-sin saludos ni relleno, insights sobre inventarios.
+Estilo de la casa: espanol, sin saludos, sin markdown, sin relleno.
 """
 
 VEREDICTOS_VALIDOS = ("ACCIONAR", "ESPERAR", "REVISAR")
 
+# ------------------------------------------------------------- tono comun
+TONO = (
+    "TONO (obligatorio): escribís como un analista senior que le explica "
+    "las cosas claras a un colega. Prosa simple y directa, frases cortas. "
+    "Como mucho 2 o 3 números bien elegidos por mensaje: el punto, no el "
+    "inventario. Nada de listas de métricas, nada de jerga de alerta "
+    "(prohibido 'brecha', 'violación', 'conformidad'), nada de tecnicismos "
+    "contables. Si hablás de concentración o rotación, NOMBRÁ el sector y "
+    "su peso (ej: 'Salud 13%'); está prohibido decir 'cierto sector' o "
+    "'concentración sectorial' sin nombre."
+)
+
 # ------------------------------------------------------------- filosofias
 FILOSOFIA = {
     "conservador": (
-        "FILOSOFIA CONSERVADOR: preservacion de capital primero. El colchon "
-        "de renta fija y cash es sagrado. La concentracion es el enemigo, "
+        "FILOSOFIA CONSERVADOR: preservación de capital primero. El colchón "
+        "de renta fija y cash es sagrado. La concentración es el enemigo, "
         "aunque venga de ganadoras. Prefiere perder una oportunidad antes "
-        "que un capital. Pregunta de fondo: '¿que puedo perder?'"
+        "que un capital. Pregunta de fondo: '¿qué puedo perder?'"
     ),
     "moderado": (
         "FILOSOFIA MODERADA: crecimiento con control. Tolerancia a "
-        "concentracion razonable si la tesis es solida, pero exige colchon "
-        "y diversificacion decentes. Balancea dejar correr ganancias con "
+        "concentración razonable si la tesis es sólida, pero exige colchón "
+        "y diversificación decentes. Balancea dejar correr ganancias con "
         "no quedarse expuesto. Pregunta de fondo: '¿riesgo y oportunidad "
-        "estan equilibrados?'"
+        "están equilibrados?'"
     ),
     "agresivo": (
         "FILOSOFIA AGRESIVA: crecimiento de capital a largo plazo como "
         "prioridad. Dejar correr las ganadoras: el drift que nace de "
-        "ganancias no se castiga, se celebra. Concentrar en conviccion es "
-        "aceptable; el colchon minimo basta. El mayor riesgo es quedarse "
+        "ganancias no se castiga, se celebra. Concentrar en convicción es "
+        "aceptable; el colchón mínimo basta. El mayor riesgo es quedarse "
         "afuera de las compounders. Pregunta de fondo: '¿estoy dejando "
-        "pasar la proxima decada?'"
+        "pasar la próxima década?'"
     ),
 }
 
 # ------------------------------------------------------------- roles
 MISION_TORO = (
-    "SOS EL TORO del board. Tu trabajo: la mejor version del caso A FAVOR "
-    "de la propuesta que encabeza el expediente, aplicando estrictamente tu "
-    "filosofia de perfil. REGLA DE HONESTIDAD: si el caso a favor es debil "
-    "bajo tu filosofia, decilo en una linea en lugar de inflarlo. "
-    "REGLAS: maximo 60 palabras; cita al menos UN dato literal del "
-    "expediente; prohibido inventar datos, metricas o hechos no incluidos; "
-    "da el PUNTO (un insight), no una lista de metricas."
+    "SOS EL TORO del board: construís el mejor caso A FAVOR de la propuesta, "
+    "aplicando tu filosofía de perfil. REGLA DE HONESTIDAD: si el caso a "
+    "favor es débil bajo tu filosofía, decilo en una línea en lugar de "
+    "inflarlo. Máximo 60 palabras. Cita al menos UN dato literal del "
+    "expediente. Prohibido inventar datos."
 )
 
 MISION_OSO = (
-    "SOS EL OSO del board. Te dan el argumento del toro: tu trabajo es la "
-    "mejor respuesta EN CONTRA, punto por punto donde corresponde, aplicando "
-    "la misma filosofia de perfil del toro. Atacar es tu mision: si el "
-    "argumento del toro es debil, demostralo. Si el expediente muestra "
-    "violaciones de reglas del perfil, usalas como municion principal. "
-    "REGLAS: maximo 60 palabras; cita al menos UN dato literal del "
-    "expediente o una frase del toro; prohibido inventar datos."
+    "SOS EL OSO del board: te dan el argumento del toro y construís la "
+    "mejor respuesta EN CONTRA, punto por punto donde corresponda, misma "
+    "filosofía del perfil. Atacar es tu misión: si el argumento es débil, "
+    "demostralo. Si el expediente muestra reglas incumplidas, usalas como "
+    "munición principal. Máximo 60 palabras. Cita al menos UN dato literal "
+    "del expediente o una frase del toro. Prohibido inventar datos."
 )
 
 MISION_JUEZ = (
-    "SOS EL JUEZ del board. Leiste el expediente, el caso del toro y la "
-    "respuesta del oso. Tu trabajo: SENTENCIAR. Las reglas del perfil y sus "
-    "violaciones ya fueron calculadas por el sistema: interpretalas, no las "
-    "discutas. Podes coincidir con cualquiera de los dos o con ninguno. "
-    "NO PODES ESQUIVAR: elegis obligatoriamente uno de los tres veredictos. "
-    "REGLAS: maximo 80 palabras; tu texto debe citar al menos UN dato "
-    "literal del expediente; prohibido inventar datos; escribí el punto "
-    "central y el porqué. TERMINA TU RESPUESTA con la linea exacta "
-    "'VEREDICTO: ACCIONAR' o 'VEREDICTO: ESPERAR' o 'VEREDICTO: REVISAR'. "
-    "Guia de uso: ACCIONAR = haria el movimiento ahora y explico cual; "
-    "ESPERAR = la tesis vale pero el momento no, y digo que tendria que "
-    "pasar; REVISAR = hay una violacion o riesgo real que merece la "
-    "decision del usuario, y nombro cual."
+    "SOS EL JUEZ del board: leíste el expediente, el toro y el oso, y "
+    "SENTENCIÁS. Las reglas del perfil ya fueron calculadas por el sistema: "
+    "interpretalas, no las discutas. Podés coincidir con cualquiera de los "
+    "dos o con ninguno. NO PODÉS ESQUIVAR: elegís uno de los tres "
+    "veredictos. Tu sentencia es el párrafo central del informe: es lo "
+    "único que la mayoría va a leer con atención, hacela valer. Máximo 80 "
+    "palabras, con al menos UN dato literal del expediente. "
+    "GUÍA: ACCIONAR = haría el movimiento ahora y decís cuál; ESPERAR = la "
+    "tesis vale pero el momento no, y decís qué tendría que pasar; REVISAR "
+    "= hay un riesgo real que merece la decisión del usuario, y nombrás "
+    "cuál. Tu texto DEBE incluir el veredicto escrito como: "
+    "VEREDICTO: ACCIONAR  (o ESPERAR o REVISAR)."
 )
 
 
 # ------------------------------------------------------------- armado
 def prompt_sistema(rol, perfil):
-    """System message de un agente: mision del rol + filosofia del perfil."""
+    """System message: tono común + misión del rol + filosofía del perfil."""
     filosofia = FILOSOFIA[perfil]
     if rol == "toro":
         mision = MISION_TORO
@@ -92,24 +103,23 @@ def prompt_sistema(rol, perfil):
         mision = MISION_OSO
     else:
         mision = MISION_JUEZ
-    return (f"{mision}\n\n{filosofia}\n\nEscribi en espanol, sin saludos, "
-            f"sin markdown, sin enumerar metricas.")
+    return (f"{TONO}\n\n{mision}\n\n{filosofia}\n\n"
+            f"Escribí en español, sin saludos, sin markdown, sin enumerar métricas.")
 
 
-# ------------------------------------------------------------- expedientes
 def _bloque_expediente(expediente):
-    return (f"PROPUESTA EN DELIBERACION: {expediente['propuesta']}\n\n"
+    return (f"PROPUESTA EN DELIBERACIÓN: {expediente['propuesta']}\n\n"
             f"PERFIL ACTUAL: {expediente['perfil']}\n\n"
             f"DATOS (verificados por el sistema):\n"
             f"{expediente['datos']}\n\n"
             f"REGLAS DEL PERFIL Y SU ESTADO:\n{expediente['reglas']}\n\n"
-            f"POLITICA DEL USUARIO (obligatoria de respetar):\n"
-            f"{expediente.get('politica') or '(sin politica escrita)'}")
+            f"POLÍTICA DEL USUARIO (obligatoria de respetar):\n"
+            f"{expediente.get('politica') or '(sin política escrita)'}")
 
 
 def prompt_usuario_toro(expediente):
     return (_bloque_expediente(expediente)
-            + "\n\nTu tarea: tu mejor argumento a favor, bajo tu filosofia.")
+            + "\n\nTu tarea: tu mejor argumento a favor, bajo tu filosofía.")
 
 
 def prompt_usuario_oso(expediente, texto_toro):
@@ -127,14 +137,10 @@ def prompt_usuario_juez(expediente, texto_toro, texto_oso):
 
 # ------------------------------------------------------------- parser
 def extraer_veredicto(texto):
-    """Busca la linea 'VEREDICTO: X' del juez. Devuelve X, o None si el
-    juez no cumplio el formato (en ese caso board.py lo reintenta o
-    marca sin_consenso: nunca inventa un veredicto)."""
-    for linea in (texto or "").splitlines():
-        l = linea.strip().upper()
-        if l.startswith("VEREDICTO:"):
-            v = l.split(":", 1)[1].strip().rstrip(".")
-            if v in VEREDICTOS_VALIDOS:
-                return v
-            return None
+    """Busca 'VEREDICTO: X' en TODO el texto (lección del estreno: el juez
+    a veces lo pega al párrafo y no en línea propia). Devuelve X o None."""
+    t = (texto or "").upper()
+    for v in VEREDICTOS_VALIDOS:
+        if f"VEREDICTO: {v}" in t:
+            return v
     return None

@@ -2,9 +2,10 @@
 """
 main.py — Orquestador del nieto (desk-cartera): el board de analistas.
 
-v2 (post-estreno): sectores REALES por nombre (expediente.py los baja en
-RAM), fragil-flags del hijo integrados a las reglas, y la regla de registro
-aprendida: el trigger solo se marca atendido si el board delibero 3/3.
+v3: envio ntfy en partes de 2500 caracteres (las de 3800 con emojis y
+acentos pesaban mas de los ~4000 BYTES que ntfy acepta por mensaje y
+quedaban cortadas: los emojis ocupan 2-4 bytes cada uno, el limite real
+es de bytes, no de caracteres).
 
 Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
   A. FOTO NUEVA: la fecha E1 de la pestana 'cartera' cambia -> ESTRUCTURA.
@@ -12,6 +13,8 @@ Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
   C. EVENTO: earnings en <= 7 dias de una accion del nucleo -> ESA empresa.
 
 Prioridad: A > B > C. Una deliberacion por corrida (simplicidad v1).
+REGLA DE REGISTRO: el trigger solo se marca atendido si el board delibero
+COMPLETO (3/3). Incompleto = la proxima corrida reintenta sola.
 
 Privacidad (reglas de la familia):
 - La cartera vive SOLO en RAM (incluido el mapa de sectores: guardarlo
@@ -201,7 +204,10 @@ def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
 
 # --------------------------------------------------------------- ntfy
 def enviar_ntfy(topic, texto, titulo="Board de Cartera"):
-    MAX = 3800
+    """Envia en partes de 2500 CARACTERES (margen UTF-8: los emojis y
+    acentos valen 2-4 bytes cada uno, y ntfy acepta ~4000 BYTES por
+    mensaje). Cada parte con 3 reintentos."""
+    MAX = 2500
     partes, resto = [], texto
     while len(resto) > MAX:
         corte = resto.rfind("\n", 0, MAX)
@@ -218,7 +224,8 @@ def enviar_ntfy(topic, texto, titulo="Board de Cartera"):
                 r = requests.post(
                     f"https://ntfy.sh/{topic}",
                     data=parte.encode("utf-8"),
-                    headers={"Title": titulo, "Priority": "high",
+                    headers={"Title": f"{titulo} ({i}/{len(partes)})",
+                             "Priority": "high",
                              "Tags": "chart", "Markdown": "yes"},
                     timeout=30,
                 )
@@ -299,7 +306,7 @@ def main():
         trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
 
-    # 7. ntfy privado (titulo SOLO caracteres latinos)
+    # 7. ntfy privado (titulo SOLO caracteres latinos, partes numeradas)
     topic = os.environ.get("NTFY_TOPIC_NIETO", "").strip()
     if topic:
         try:

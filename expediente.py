@@ -209,7 +209,7 @@ def _bloque_hijo(hijos_estado, tickers_cartera):
     for e in (hijos_estado or {}).get("watchlist", []):
         t = e.get("ticker")
         if t and t in tickers_cartera:
-            out.append(f"{t}: peso {_fmt(e.get('precio') and round(e['precio'],2))}, "
+                        out.append(f"{t}: precio {_fmt(e.get('precio'))}, "
                        f"veredicto {e.get('veredicto') or 'n/d'}, "
                        f"desde {e.get('desde', 'n/d')} "
                        f"({e.get('dias_seguimiento', '?')} dias), "

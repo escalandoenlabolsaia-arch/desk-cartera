@@ -11,6 +11,10 @@ Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
      ESA empresa.
 
 Prioridad: A > B > C. Una deliberacion por corrida (simplicidad v1).
+REGLA DE REGISTRO: el trigger solo se marca como atendido si el board
+delibero COMPLETO (3/3 perfiles). Una deliberacion incompleta (ej: 429 de
+Groq) NO se registra -> la proxima corrida reintenta sola. Leccion del
+estreno: un fallo tecnico nunca debe consumir un trigger.
 
 Privacidad (reglas de la familia):
 - La cartera vive SOLO en RAM. Al repo publico jamas: ni expedientes, ni
@@ -285,7 +289,7 @@ def main():
     # 5. board (9 agentes)
     key = os.environ.get("GROQ_API_KEY", "").strip()
     modelo = cargar_modelo()
-    mensaje, linea_log = deliberar_board(
+    mensaje, linea_log, ok_count = deliberar_board(
         expedientes, key, modelo,
         trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
@@ -302,8 +306,13 @@ def main():
     else:
         print("  AVISO: sin NTFY_TOPIC_NIETO: deliberacion NO enviada")
 
-    # 7. registro minimo (fecha/tipo, jamas contenido)
-    guardar_ultimo(tipo, fecha_foto if tipo == "estructura" else None)
+    # 7. registro: SOLO si el board delibero completo (3/3). Incompleto =
+    # el trigger queda vivo y la proxima corrida reintenta sola.
+    if ok_count == 3:
+        guardar_ultimo(tipo, fecha_foto if tipo == "estructura" else None)
+    else:
+        print(f"  AVISO: board incompleto ({ok_count}/3): NO registro el "
+              f"trigger -> la proxima corrida reintenta")
 
     # 8. estado publico
     publicar_estado(tipo, linea_log, len(estado_hijo.get("watchlist", [])))

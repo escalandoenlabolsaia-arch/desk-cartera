@@ -11,9 +11,10 @@ la cartera -> JAMAS van al log publico. Al log sale solo un conteo
 abstracto (sin tickers ni perfiles asociados). El contenido completo viaja
 unicamente por ntfy privado.
 
-Resiliencia: cada llamada a Groq degrade a None si falla (con el detalle
-del error en el log para diagnosticar); si un agente falla, ese perfil
-queda 'sin deliberacion' y los demas siguen. Nunca se inventa un veredicto.
+Resiliencia ante 429 (limite de velocidad de Groq, tipico del plan gratis
+en horas calientes): hasta 4 reintentos con espera creciente (10s/20s/30s/
+30s). Nunca se inventa un veredicto: si todo falla, ese perfil queda 'sin
+deliberacion' y el resto sigue.
 """
 
 import json
@@ -41,30 +42,40 @@ def cargar_modelo():
 
 # --------------------------------------------------------------- groq
 def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
-    """Una llamada al modelo. Devuelve texto o None (falla -> None, la
-    deliberacion degrada). El log muestra el detalle del error (401 = key
-    mala, 404 = modelo no disponible, 429 = limite de velocidad)."""
-    try:
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": modelo,
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "reasoning_effort": "low",
-                "max_tokens": max_tokens,
-                "temperature": 0.4,
-            },
-            timeout=40,
-        )
-        r.raise_for_status()
-        return (r.json()["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        print(f"  Groq fallo: {e}")
-        return None
+    """Una llamada al modelo con reintentos paciente ante 429 (limite de
+    velocidad). Devuelve texto o None (falla definitiva -> None: la
+    deliberacion degrada, jamas se inventa contenido)."""
+    esperas = [10, 20, 30, 30]   # reintentos ante 429: total hasta 90s
+    for intento in range(1, len(esperas) + 2):
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": modelo,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "reasoning_effort": "low",
+                    "max_tokens": max_tokens,
+                    "temperature": 0.4,
+                },
+                timeout=40,
+            )
+            if r.status_code == 429:
+                espera = esperas[min(intento - 1, len(esperas) - 1)]
+                print(f"  Groq 429 (limite de velocidad), espero {espera}s "
+                      f"(intento {intento}/{len(esperas) + 1})")
+                time.sleep(espera)
+                continue
+            r.raise_for_status()
+            return (r.json()["choices"][0]["message"]["content"] or "").strip()
+        except Exception as e:
+            print(f"  Groq fallo: {e}")
+            return None
+    print("  Groq 429 persistente tras todos los reintentos")
+    return None
 
 
 def _recortar(texto, max_lineas):
@@ -133,7 +144,7 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
             continue
         r = deliberar_perfil(exp, nombre, key, modelo)
         resultados.append(r)
-        time.sleep(2)   # pausa cortesia entre perfiles
+        time.sleep(5)   # pausa entre perfiles (cortesia con el limite)
 
     veredictos = [r.get("veredicto") for r in resultados]
     validos = [v for v in veredictos if v]
@@ -148,12 +159,12 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
         consenso = "sin sentencias validas"
 
     # ---- mensaje privado (contenido completo, con datos de cartera) ----
-    l = [f"BOARD — {trigger_log}", "-----------------------------"]
+    l = [f"BOARD - {trigger_log}", "-----------------------------"]
     for r in resultados:
         e, nombre = r["emoji"], r["perfil"].upper()
         v = r.get("veredicto")
         titulo = v if v else ("SIN SENTENCIA" if not r.get("fallo") else "FALLO TECNICO")
-        l.append(f"{e} {nombre} — {titulo}")
+        l.append(f"{e} {nombre} - {titulo}")
         if r.get("fallo"):
             l.append(f"(sin deliberacion: {r['fallo']})")
         else:

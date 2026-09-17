@@ -157,7 +157,6 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
             l.append(f"(sin deliberacion: {r['fallo']})")
         else:
             if r.get("juez"):
-                # al juez le sacamos la linea VEREDICTO: del cuerpo (ya esta en el titulo)
                 cuerpo = "\n".join(x for x in r["juez"].splitlines()
                                    if not x.strip().upper().startswith("VEREDICTO:"))
                 l.append(cuerpo)

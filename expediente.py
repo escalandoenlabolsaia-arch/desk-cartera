@@ -2,23 +2,25 @@
 """
 expediente.py — El expediente del board: aritmetica hecha por Python.
 
-v2 (post-estreno): sectores REALES por nombre, en espanol, bajados en RAM.
-- 1ra fuente: el estado del hijo (gratis: ya trae el sector de sus empresas).
-- 2da fuente: yfinance para el resto de las acciones (RAM, sin persistir:
-  guardar el mapa de sectores de tu cartera seria publicar tu cartera).
-- Solo acciones individuales cuentan para sectores: los ETFs son
-  multi-sector y se reportan aparte (etiquetas de yfinance poco fiables).
-- Lo que no se pueda clasificar NO se suma a un pseudo-sector: se lista
-  individualmente (leccion del 'sector n/d 57.21%' del estreno).
+v3 (post-calibracion): la EVALUACION del perfil se pre-redacta en lenguaje
+llano, regla por regla, con el ALCANCE de cada limite explicito en cada
+linea (leccion del estreno v2: el agresivo aplico el techo por ACCION de
+8% a SECTORES y recomendo 'vender hasta que cada sector quede bajo 8%').
+Los agentes NO calculan ni deciden que techo aplica a que dato: leen la
+evaluacion lista y debaten que hacer.
 
-Regla de arquitectura: los 9 agentes NO calculan nada. Cada regla sale
-flaggeada VIOLADO/BORDE/OK con el numero exacto. Los prompts exigen que
-los agentes NOMBREN el sector al hablar de concentracion o rotacion.
+Formato de cada linea de evaluacion:
+- 'no cumple el techo/piso/tope/maximo de X%' cuando no se cumple
+- 'cerca del...' en borde (>= 90% del limite)
+- 'dentro de...' / 'por encima del piso...' cuando cumple
+
+Sectores: reales, en espanol, en RAM (gratis del hijo + yfinance para el
+resto). Solo acciones individuales cuentan para sectores; ETFs son
+multi-sector y se listan aparte; lo sin-clasificar NUNCA se suma.
 
 Privacidad: todo vive SOLO en RAM. Jamas se persiste en el repo publico.
 """
 
-import json
 import time
 
 import yfinance as yf
@@ -28,7 +30,6 @@ TIPOS_RENTA_AR = {"bono_soberano", "bono_subsoberano", "on"}
 TIPOS_ACCIONES = {"accion", "etf"}
 TIPOS_OPCIONES = {"bucket_manual"}
 
-# Traduccion de sectores GICS (yfinance devuelve ingles)
 SECTOR_ES = {
     "Technology": "Tecnologia",
     "Communication Services": "Comunicacion",
@@ -45,8 +46,7 @@ SECTOR_ES = {
 
 
 def _sector_yf(ticker):
-    """Sector GICS de yfinance, o None si no responde (con reintento corto
-    por si Yahoo está caliente: leccion del 429)."""
+    """Sector GICS de yfinance, o None (con reintento corto)."""
     for intento in range(2):
         try:
             info = yf.Ticker(ticker).info or {}
@@ -61,8 +61,8 @@ def _sector_yf(ticker):
 
 
 def obtener_sectores(lineas, hijos_estado):
-    """Mapa ticker->sector (en espanol) para las acciones de la cartera.
-    Primero el estado del hijo (gratis), despues yfinance (en RAM)."""
+    """Mapa ticker->sector (espanol) de las acciones de la cartera.
+    Primero el estado del hijo (gratis), despues yfinance (RAM)."""
     out = {}
     acc = [l["ticker"] for l in lineas if l["tipo"] in TIPOS_ACCIONES]
     mapa_hijo = {}
@@ -85,8 +85,8 @@ def obtener_sectores(lineas, hijos_estado):
 
 
 def _por_sector(lineas, sectores):
-    """Agrupa SOLO acciones individuales por sector real. Devuelve
-    (dict sector -> [lineas], lista sin clasificar). ETFs fuera."""
+    """Agrupa SOLO acciones individuales por sector real.
+    Devuelve (dict sector -> [lineas], lista sin clasificar). ETFs fuera."""
     por, sin = {}, []
     for l in lineas:
         if l["tipo"] == "etf":
@@ -112,7 +112,7 @@ def _top_n(lineas, n=5):
 
 
 def _bloque_sectores(lineas, sectores):
-    """Texto legible de sectores para el expediente: nombre, peso y tickers."""
+    """Mapa de sectores legible: nombre, peso y tickers."""
     por, sin = _por_sector(lineas, sectores)
     lineas_txt = []
     for s, ls in sorted(por.items(),
@@ -173,7 +173,7 @@ def leer_cartera_ram(sheet, pestana="cartera", tol=3.0):
 
 
 def cargar_politica(sheet):
-    """Pestana 'politica' (texto del usuario). None si falta: no es requisito."""
+    """Pestana 'politica' (texto del usuario). None si falta."""
     try:
         ws = sheet.worksheet("politica")
         valores = ws.get_all_values()
@@ -187,81 +187,98 @@ def cargar_politica(sheet):
         return None
 
 
-# ------------------------------------------------------- aritmetica
-def armar_reglas(lineas, perfil, sectores):
-    """Aplica el perfil a la cartera: cada regla con estado y numero exacto.
-    Devuelve (texto_reglas, violaciones_count)."""
+# ------------------------------------------------------- evaluacion llano
+def evaluar_perfil(lineas, perfil, sectores, fragil_flags=None):
+    """La evaluacion del perfil, PRE-REDACTADA en lenguaje llano por Python.
+    Devuelve (texto, viol_count). Esta es la unica fuente de verdad para
+    los agentes: ellos no recalculan ni interpretan alcances."""
     u = perfil
-    reglas, viol = [], 0
-
-    def add(nombre, estado, detalle):
-        reglas.append(f"{nombre}: {estado} - {detalle}")
-
-    # 1. Techo por accion
+    ev, viol = [], 0
     acc = sorted((l for l in lineas if l["tipo"] in TIPOS_ACCIONES),
                  key=lambda l: -l["peso"])
-    for l in acc:
-        if l["peso"] > u["techo_posicion"]:
-            estado = "VIOLADO"
-            viol += 1
-        elif l["peso"] >= 0.9 * u["techo_posicion"]:
-            estado = "BORDE"
-        else:
-            estado = "OK"
-        if estado != "OK":
-            add("techo por accion", estado,
-                f"{l['ticker']} {_fmt(l['peso'], '%')} vs max {u['techo_posicion']}%")
 
-    # 2. Top-5
+    # 1. Techo por ACCION (solo quienes no cumplen o estan en borde)
+    for l in acc:
+        p = l["peso"]
+        if p > u["techo_posicion"]:
+            ev.append(f"- {l['ticker']} {_fmt(p, '%')}: no cumple el techo "
+                      f"por accion de {u['techo_posicion']}%")
+            viol += 1
+        elif p >= 0.9 * u["techo_posicion"]:
+            ev.append(f"- {l['ticker']} {_fmt(p, '%')}: cerca del techo por "
+                      f"accion de {u['techo_posicion']}%")
+
+    # 2. Top-5 acumulado
     _, top5 = _top_n(lineas)
     if top5 > u["top5_max"]:
-        add("top-5 acumulado", "VIOLADO", f"{_fmt(top5, '%')} vs max {u['top5_max']}%")
+        ev.append(f"- Top-5 acumulado {_fmt(top5, '%')}: no cumple el maximo "
+                  f"acumulado de {u['top5_max']}%")
         viol += 1
     elif top5 >= 0.9 * u["top5_max"]:
-        add("top-5 acumulado", "BORDE", f"{_fmt(top5, '%')} vs max {u['top5_max']}%")
+        ev.append(f"- Top-5 acumulado {_fmt(top5, '%')}: cerca del maximo "
+                  f"acumulado de {u['top5_max']}%")
+    else:
+        ev.append(f"- Top-5 acumulado {_fmt(top5, '%')}: dentro del maximo "
+                  f"de {u['top5_max']}%")
 
-    # 3. Sectores REALES (solo acciones individuales)
+    # 3. Sectores: los 3 mayores, con el alcance EXPLICITO en cada linea
+    #    (el maximo por sector es una regla DISTINTA del techo por accion)
     por_sec, _ = _por_sector(lineas, sectores)
     max_sec = u.get("sector_default_max", 1000)
-    for s, ls in sorted(por_sec.items(),
-                        key=lambda kv: -sum(x["peso"] for x in kv[1])):
+    mayores = sorted(por_sec.items(),
+                     key=lambda kv: -sum(x["peso"] for x in kv[1]))[:3]
+    for s, ls in mayores:
         peso = round(sum(x["peso"] for x in ls), 2)
         if peso > max_sec:
-            add(f"sector {s}", "VIOLADO", f"{_fmt(peso, '%')} vs max {max_sec}%")
+            ev.append(f"- Sector {s} {_fmt(peso, '%')}: no cumple el maximo "
+                      f"por sector de {max_sec}%")
             viol += 1
         elif peso >= 0.9 * max_sec:
-            add(f"sector {s}", "BORDE", f"{_fmt(peso, '%')} vs max {max_sec}%")
+            ev.append(f"- Sector {s} {_fmt(peso, '%')}: cerca del maximo por "
+                      f"sector de {max_sec}%")
+        else:
+            ev.append(f"- Sector {s} {_fmt(peso, '%')}: dentro del maximo por "
+                      f"sector de {max_sec}%")
 
-    # 4. Colchon (fci + cash)
+    # 4. Colchon (fci + cash): es un PISO, no un tope
     col = round(sum(l["peso"] for l in lineas if l["tipo"] in TIPOS_COLCHON), 2)
     if col < u["colchon_min"]:
-        add("colchon fci/cash", "VIOLADO",
-            f"{_fmt(col, '%')} vs min {u['colchon_min']}%")
+        ev.append(f"- Colchon fci+cash {_fmt(col, '%')}: no cumple el piso "
+                  f"de {u['colchon_min']}%")
         viol += 1
     elif col < u["colchon_min"] * 1.1:
-        add("colchon fci/cash", "BORDE",
-            f"{_fmt(col, '%')} vs min {u['colchon_min']}%")
+        ev.append(f"- Colchon fci+cash {_fmt(col, '%')}: cerca del piso "
+                  f"de {u['colchon_min']}%")
+    else:
+        ev.append(f"- Colchon fci+cash {_fmt(col, '%')}: por encima del piso "
+                  f"de {u['colchon_min']}%")
 
     # 5. Renta fija AR
     rf = round(sum(l["peso"] for l in lineas if l["tipo"] in TIPOS_RENTA_AR), 2)
     if rf > u["renta_fija_ar_max"]:
-        add("renta fija AR", "VIOLADO",
-            f"{_fmt(rf, '%')} vs max {u['renta_fija_ar_max']}%")
+        ev.append(f"- Renta fija AR {_fmt(rf, '%')}: no cumple el maximo "
+                  f"de {u['renta_fija_ar_max']}%")
         viol += 1
 
-    # 6. Opciones
+    # 6. Opciones (bucket_manual)
     op = round(sum(l["peso"] for l in lineas if l["tipo"] in TIPOS_OPCIONES), 2)
     if op > u["opciones_max"]:
-        add("opciones", "VIOLADO", f"{_fmt(op, '%')} vs max {u['opciones_max']}%")
+        ev.append(f"- Opciones {_fmt(op, '%')}: no cumple el tope "
+                  f"de {u['opciones_max']}%")
         viol += 1
     elif op >= 0.9 * u["opciones_max"]:
-        add("opciones", "BORDE", f"{_fmt(op, '%')} vs max {u['opciones_max']}%")
+        ev.append(f"- Opciones {_fmt(op, '%')}: cerca del tope "
+                  f"de {u['opciones_max']}%")
+    else:
+        ev.append(f"- Opciones {_fmt(op, '%')}: dentro del tope "
+                  f"de {u['opciones_max']}%")
 
     # 7. Veredictos fragil del hijo sobre acciones de la cartera
-    tickers_acc = {l["ticker"] for l in lineas if l["tipo"] == "accion"}
-    for e in []:  # se completa abajo con hijos_estado
-        pass
-    return "\n".join("- " + r for r in reglas), viol
+    for f in (fragil_flags or []):
+        ev.append(f"- {f}: revisar con prioridad")
+
+    ev.append("(el resto de la cartera: sin observaciones)")
+    return "\n".join(ev), viol
 
 
 def _bloque_hijo(hijos_estado, tickers_cartera):
@@ -284,29 +301,18 @@ def armar_expediente(lineas, fecha_foto, perfil_nombre, perfil, hijos_estado,
     """Arma el dict-expediente que leen los 3 agentes de UN perfil."""
     acc, top5 = _top_n(lineas)
     tickers = {l["ticker"] for l in lineas}
-    reglas_txt, viol = armar_reglas(lineas, perfil, sectores)
-
-    # fragil del hijo como regla textual (en armar_reglas no hay acceso al estado)
-    if fragil_flags:
-        for f in fragil_flags:
-            reglas_txt += f"\n- veredicto fragil (hijo): REVISAR - {f}"
+    eval_txt, viol = evaluar_perfil(lineas, perfil, sectores or {},
+                                    fragil_flags)
 
     datos = [
         f"Foto de cartera: {fecha_foto or 'sin fecha'} - {len(lineas)} lineas",
         "Acciones por peso (las primeras 10): "
         + ", ".join(f"{l['ticker']} {l['peso']}%" for l in acc[:10]),
-        f"Top-5 acumulado: {top5}%",
-        "Colchon (fci+cash): "
-        + f"{round(sum(l['peso'] for l in lineas if l['tipo'] in TIPOS_COLCHON), 2)}%",
-        "Renta fija AR (soberanos+subsoberanos+ONs): "
-        + f"{round(sum(l['peso'] for l in lineas if l['tipo'] in TIPOS_RENTA_AR), 2)}%",
-        "Opciones (bucket_manual): "
-        + f"{round(sum(l['peso'] for l in lineas if l['tipo'] in TIPOS_OPCIONES), 2)}%",
         "Cripto (reportado, sin regla): "
         + f"{round(sum(l['peso'] for l in lineas if l['tipo'] == 'cripto'), 2)}%",
         "",
-        "SECTORES DE TUS ACCIONES (solo acciones individuales; aca es donde "
-        "hay que NOMBRAR sectores si hablas de concentracion o rotacion):",
+        "MAPA DE SECTORES (solo referencia; los maximos por sector ya estan "
+        "evaluados en la evaluacion de tu perfil, con su alcance dicho):",
         _bloque_sectores(lineas, sectores or {}),
         "",
         "SEGUIMIENTO DEL HIJO (empresas de tu cartera que el hijo sigue):",
@@ -315,8 +321,8 @@ def armar_expediente(lineas, fecha_foto, perfil_nombre, perfil, hijos_estado,
     return {
         "propuesta": propuesta,
         "perfil": perfil_nombre,
+        "evaluacion": eval_txt,
         "datos": "\n".join(datos),
-        "reglas": reglas_txt,
         "violaciones": viol,
         "politica": politica,
     }

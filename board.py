@@ -15,6 +15,11 @@ Resiliencia ante 429 (limite de velocidad de Groq, tipico del plan gratis
 en horas calientes): hasta 4 reintentos con espera creciente (10s/20s/30s/
 30s). Nunca se inventa un veredicto: si todo falla, ese perfil queda 'sin
 deliberacion' y el resto sigue.
+
+Contrato con main.py: deliberar_board devuelve (mensaje, linea_log,
+ok_count). main.py SOLO registra el trigger como atendido si ok_count == 3
+(board completo): una deliberacion incompleta se reintenta en la proxima
+corrida (leccion del 429: un fallo no debe consumir el trigger).
 """
 
 import json
@@ -132,9 +137,10 @@ def deliberar_perfil(expediente, perfil_nombre, key, modelo):
 
 # --------------------------------------------------------------- board completo
 def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
-    """Corre los 3 perfiles. Devuelve (mensaje_ntfy, linea_log).
+    """Corre los 3 perfiles. Devuelve (mensaje_ntfy, linea_log, ok_count).
     mensaje_ntfy: contenido COMPLETO (privado). linea_log: conteo abstracto
-    (publico, sin tickers ni datos de cartera)."""
+    (publico, sin tickers ni datos de cartera). ok_count: cuantos perfiles
+    dieron veredicto valido (main registra el trigger solo si es 3)."""
     resultados = []
     for nombre in ORDEN:
         exp = expedientes.get(nombre)
@@ -181,7 +187,7 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
     mensaje = "\n".join(l)
 
     # ---- linea de log PUBLICO: conteo abstracto, sin tickers ni perfiles ----
-    ok = sum(1 for r in resultados if r.get("veredicto"))
-    linea_log = (f"board: {ok}/3 perfiles deliberados | consenso: {consenso} "
+    ok_count = len(validos)
+    linea_log = (f"board: {ok_count}/3 perfiles deliberados | consenso: {consenso} "
                  f"(detalle por ntfy)")
-    return mensaje, linea_log
+    return mensaje, linea_log, ok_count

@@ -2,22 +2,10 @@
 """
 prompts.py — Las personalidades de los 9 agentes del board (el nieto).
 
-v2 (post-estreno, con la leccion de la primera deliberacion):
-- TONO: analista senior que le explica a un colega. Prosa clara, frases
-  cortas, maximo 2-3 numeros bien elegidos, sin listas de metricas,
-  sin jerga de alerta, sin tecnicismos contables.
-- SECTORES: prohibido hablar de concentracion o rotacion sin NOMBRAR el
-  sector y su peso (leccion del pseudo-'sector n/d 57.21%').
-- El oso siempre ataca (deliberacion adversarial de diseno) pero bajo la
-  MISMA filosofia del perfil.
-- El juez no esquiva: elige ACCIONAR/ESPERAR/REVISAR y su sentencia es el
-  parrafo central del informe.
-
-Formato de salida del juez: debe incluir el veredicto como 'VEREDICTO: X'
-(puede ir en linea propia o al final del parrafo: el parser lo busca en
-todo el texto). X es ACCIONAR / ESPERAR / REVISAR (vocabulario cerrado).
-
-Estilo de la casa: espanol, sin saludos, sin markdown, sin relleno.
+v3: el juez escribe PRIMERO su parrafo de sentencia y AL FINAL, en linea
+propia, el veredicto (leccion: si el veredicto va primero, el modelo a
+veces responde solo eso y la sentencia queda vacia). El resto igual:
+tono de analista senior, sectores nombrados, concision, prohibido inventar.
 """
 
 VEREDICTOS_VALIDOS = ("ACCIONAR", "ESPERAR", "REVISAR")
@@ -82,14 +70,17 @@ MISION_JUEZ = (
     "SENTENCIÁS. Las reglas del perfil ya fueron calculadas por el sistema: "
     "interpretalas, no las discutas. Podés coincidir con cualquiera de los "
     "dos o con ninguno. NO PODÉS ESQUIVAR: elegís uno de los tres "
-    "veredictos. Tu sentencia es el párrafo central del informe: es lo "
-    "único que la mayoría va a leer con atención, hacela valer. Máximo 80 "
-    "palabras, con al menos UN dato literal del expediente. "
+    "veredictos. FORMATO OBLIGATORIO DE TU RESPUESTA (en este orden): "
+    "PRIMERO escribí tu sentencia como un párrafo de prosa (máximo 80 "
+    "palabras, con al menos UN dato literal del expediente: el punto "
+    "central y el porqué) y DESPUÉS, en una línea nueva al final, el "
+    "veredicto escrito exactamente así: VEREDICTO: ACCIONAR (o ESPERAR o "
+    "REVISAR). NUNCA respondas solo el veredicto: el párrafo es la parte "
+    "más importante del informe. "
     "GUÍA: ACCIONAR = haría el movimiento ahora y decís cuál; ESPERAR = la "
     "tesis vale pero el momento no, y decís qué tendría que pasar; REVISAR "
     "= hay un riesgo real que merece la decisión del usuario, y nombrás "
-    "cuál. Tu texto DEBE incluir el veredicto escrito como: "
-    "VEREDICTO: ACCIONAR  (o ESPERAR o REVISAR)."
+    "cuál."
 )
 
 
@@ -132,13 +123,13 @@ def prompt_usuario_juez(expediente, texto_toro, texto_oso):
     return (_bloque_expediente(expediente)
             + f"\n\nARGUMENTO DEL TORO:\n{texto_toro}"
             + f"\n\nARGUMENTO DEL OSO:\n{texto_oso}"
-            + "\n\nTu tarea: sentencia final con veredicto.")
+            + "\n\nTu tarea: sentencia final (párrafo primero, veredicto "
+              "al final en línea propia).")
 
 
 # ------------------------------------------------------------- parser
 def extraer_veredicto(texto):
-    """Busca 'VEREDICTO: X' en TODO el texto (lección del estreno: el juez
-    a veces lo pega al párrafo y no en línea propia). Devuelve X o None."""
+    """Busca 'VEREDICTO: X' en TODO el texto. Devuelve X o None."""
     t = (texto or "").upper()
     for v in VEREDICTOS_VALIDOS:
         if f"VEREDICTO: {v}" in t:

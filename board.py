@@ -2,24 +2,13 @@
 """
 board.py — El motor de deliberacion: 9 agentes (toro/oso/juez x 3 perfiles).
 
-Flujo por perfil: TORO argumenta -> OSO responde (lee al toro) -> JUEZ
-sentencia con linea 'VEREDICTO: X'. La unanimidad la calcula Python
-contando veredictos parseados: jamas a ojo del LLM.
-
-Privacidad (regla de la familia): los textos de los agentes CITAN datos de
-la cartera -> JAMAS van al log publico. Al log sale solo un conteo
-abstracto (sin tickers ni perfiles asociados). El contenido completo viaja
-unicamente por ntfy privado.
-
-Resiliencia ante 429 (limite de velocidad de Groq, tipico del plan gratis
-en horas calientes): hasta 4 reintentos con espera creciente (10s/20s/30s/
-30s). Nunca se inventa un veredicto: si todo falla, ese perfil queda 'sin
-deliberacion' y el resto sigue.
+v2 (post-estreno): mensaje jerarquizado (sentencia del juez protagonista,
+toro/oso como citas de contexto), parser de veredicto en todo el texto,
+reintentos pacientes ante 429, y la linea de log publica sigue abstracta
+(sin tickers, sin perfiles asociados a veredictos).
 
 Contrato con main.py: deliberar_board devuelve (mensaje, linea_log,
-ok_count). main.py SOLO registra el trigger como atendido si ok_count == 3
-(board completo): una deliberacion incompleta se reintenta en la proxima
-corrida (leccion del 429: un fallo no debe consumir el trigger).
+ok_count). main.py SOLO registra el trigger como atendido si ok_count == 3.
 """
 
 import json
@@ -48,9 +37,8 @@ def cargar_modelo():
 # --------------------------------------------------------------- groq
 def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
     """Una llamada al modelo con reintentos paciente ante 429 (limite de
-    velocidad). Devuelve texto o None (falla definitiva -> None: la
-    deliberacion degrada, jamas se inventa contenido)."""
-    esperas = [10, 20, 30, 30]   # reintentos ante 429: total hasta 90s
+    velocidad). Devuelve texto o None (falla definitiva -> None)."""
+    esperas = [10, 20, 30, 30]
     for intento in range(1, len(esperas) + 2):
         try:
             r = requests.post(
@@ -89,6 +77,12 @@ def _recortar(texto, max_lineas):
     return "\n".join(lineas[:max_lineas])
 
 
+def _quitar_veredicto(texto):
+    """Saca la parte 'VEREDICTO: X' del cuerpo del juez (ya va en el título)."""
+    partes = (texto or "").split("VEREDICTO:")
+    return partes[0].strip()
+
+
 # --------------------------------------------------------------- deliberacion x perfil
 def deliberar_perfil(expediente, perfil_nombre, key, modelo):
     """Toro -> Oso (lee al toro) -> Juez (lee ambos). Devuelve dict del
@@ -119,28 +113,26 @@ def deliberar_perfil(expediente, perfil_nombre, key, modelo):
                               key, modelo, max_tokens=800)
     veredicto = extraer_veredicto(texto_juez)
     if veredicto is None:
-        # reintento unico con recordatorio de formato (no inventamos: si
-        # tampoco cumple, el perfil queda sin sentencia)
+        # reintento unico con recordatorio de formato (no inventamos)
         texto_juez = _llamar_groq(
             sys_juez,
             prompt_usuario_juez(expediente, res["toro"], res["oso"])
-            + "\n\nRECORDATORIO: tu respuesta DEBE terminar con la linea "
-              "exacta 'VEREDICTO: ACCIONAR' o 'VEREDICTO: ESPERAR' o "
+            + "\n\nRECORDATORIO: tu respuesta DEBE incluir el veredicto "
+              "escrito como 'VEREDICTO: ACCIONAR' o 'VEREDICTO: ESPERAR' o "
               "'VEREDICTO: REVISAR'.",
             key, modelo, max_tokens=800)
         veredicto = extraer_veredicto(texto_juez)
 
-    res["juez"] = _recortar(texto_juez, 5) if texto_juez else None
-    res["veredicto"] = veredicto   # None = juez no cumplio formato
+    res["juez"] = _recortar(texto_juez, 6) if texto_juez else None
+    res["veredicto"] = veredicto
     return res
 
 
 # --------------------------------------------------------------- board completo
 def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
     """Corre los 3 perfiles. Devuelve (mensaje_ntfy, linea_log, ok_count).
-    mensaje_ntfy: contenido COMPLETO (privado). linea_log: conteo abstracto
-    (publico, sin tickers ni datos de cartera). ok_count: cuantos perfiles
-    dieron veredicto valido (main registra el trigger solo si es 3)."""
+    mensaje_ntfy: contenido COMPLETO, jerarquizado (privado). linea_log:
+    conteo abstracto (publico, sin tickers ni perfiles asociados)."""
     resultados = []
     for nombre in ORDEN:
         exp = expedientes.get(nombre)
@@ -150,7 +142,7 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
             continue
         r = deliberar_perfil(exp, nombre, key, modelo)
         resultados.append(r)
-        time.sleep(5)   # pausa entre perfiles (cortesia con el limite)
+        time.sleep(5)
 
     veredictos = [r.get("veredicto") for r in resultados]
     validos = [v for v in veredictos if v]
@@ -164,29 +156,43 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
     else:
         consenso = "sin sentencias validas"
 
-    # ---- mensaje privado (contenido completo, con datos de cartera) ----
-    l = [f"BOARD - {trigger_log}", "-----------------------------"]
+    # ---- mensaje privado jerarquizado ----
+    l = ["BOARD DE CARTERA", f"Analisis: {trigger_log}", "",
+         "=============================="]
     for r in resultados:
         e, nombre = r["emoji"], r["perfil"].upper()
         v = r.get("veredicto")
-        titulo = v if v else ("SIN SENTENCIA" if not r.get("fallo") else "FALLO TECNICO")
-        l.append(f"{e} {nombre} - {titulo}")
+        etiqueta = v if v else ("SIN SENTENCIA" if not r.get("fallo") else "FALLO TECNICO")
+        l.append(f"{e} {nombre} -> {etiqueta}")
         if r.get("fallo"):
             l.append(f"(sin deliberacion: {r['fallo']})")
         else:
             if r.get("juez"):
-                cuerpo = "\n".join(x for x in r["juez"].splitlines()
-                                   if not x.strip().upper().startswith("VEREDICTO:"))
+                cuerpo = _quitar_veredicto(r["juez"])
+                l.append("")
                 l.append(cuerpo)
+            if r.get("toro") or r.get("oso"):
+                l.append("")
+                l.append("El debate de atras:")
             if r.get("toro"):
-                l.append(f"  -> toro: {r['toro']}")
+                l.append(f'  Toro: "{r["toro"]}"')
             if r.get("oso"):
-                l.append(f"  -> oso: {r['oso']}")
+                l.append(f'  Oso: "{r["oso"]}"')
         l.append("")
-    l.append(f"CONSENSO: {consenso}")
+        l.append("==============================")
+    l.append(f"CONSENSO DEL BOARD: {consenso}")
+    if len(validos) == 3 and len(set(validos)) < 3:
+        if len(set(validos)) == 1:
+            l.append("Los tres perfiles coinciden: señal fuerte.")
+        else:
+            l.append("Hay coincidencia parcial: la divergencia en el resto "
+                     "tambien es informacion.")
+    elif len(validos) < 3:
+        l.append("(deliberacion incompleta: los perfiles que faltan se "
+                 "recuperan en la proxima corrida)")
     mensaje = "\n".join(l)
 
-    # ---- linea de log PUBLICO: conteo abstracto, sin tickers ni perfiles ----
+    # ---- linea de log PUBLICO ----
     ok_count = len(validos)
     linea_log = (f"board: {ok_count}/3 perfiles deliberados | consenso: {consenso} "
                  f"(detalle por ntfy)")

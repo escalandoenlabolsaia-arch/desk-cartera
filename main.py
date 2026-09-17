@@ -2,10 +2,12 @@
 """
 main.py — Orquestador del nieto (desk-cartera): el board de analistas.
 
-v3: envio ntfy en partes de 2500 caracteres (las de 3800 con emojis y
-acentos pesaban mas de los ~4000 BYTES que ntfy acepta por mensaje y
-quedaban cortadas: los emojis ocupan 2-4 bytes cada uno, el limite real
-es de bytes, no de caracteres).
+v4: dos mejoras de lectura del mensaje en el celular:
+  (a) el corte de partes prefiere el fin de oracion (". ") cuando el
+      parrafo no tiene saltos de linea (leccion: 'preservar ca' cortado).
+  (b) cada parte lleva su rótulo '[PARTE X/N]' al inicio del cuerpo:
+      si una parte no llega, se nota al instante (leccion: la parte del
+      medio 'desaparecida' sin que se sepa cuántas eran).
 
 Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
   A. FOTO NUEVA: la fecha E1 de la pestana 'cartera' cambia -> ESTRUCTURA.
@@ -151,9 +153,9 @@ def _propuesta_estructura(fecha_foto):
     return ("Deliberar la ESTRUCTURA de la cartera segun la foto mas "
             f"reciente ({fecha_foto}): concentraciones (nombrando sector), "
             "colchon, sectores, y las acciones del nucleo que el hijo "
-            "sigue. Proponé movimientos solo si hay reglas incumplidas o "
-            "en borde; si todo OK, sentencia ESPERAR con el punto que mas "
-            "importe.")
+            "sigue. Proponé movimientos solo si hay reglas que no se "
+            "cumplen o están en borde; si todo OK, sentencia ESPERAR con "
+            "el punto que mas importe.")
 
 
 def _propuesta_empresa(ticker, detalle, e_hijo):
@@ -204,26 +206,38 @@ def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
 
 # --------------------------------------------------------------- ntfy
 def enviar_ntfy(topic, texto, titulo="Board de Cartera"):
-    """Envia en partes de 2500 CARACTERES (margen UTF-8: los emojis y
-    acentos valen 2-4 bytes cada uno, y ntfy acepta ~4000 BYTES por
-    mensaje). Cada parte con 3 reintentos."""
+    """Envia en partes de 2500 caracteres. El corte prefiere, en orden:
+    fin de linea -> fin de oracion ('. ') -> corte duro (ultimo recurso).
+    Cada parte (si hay mas de una) lleva el rótulo '[PARTE X/N]' al inicio
+    del cuerpo: una parte perdida se nota al instante. Titulos numerados.
+    (Los emojis y acentos valen 2-4 bytes: el limite real de ntfy es de
+    BYTES, por eso el margen de 2500 chars.)"""
     MAX = 2500
     partes, resto = [], texto
     while len(resto) > MAX:
         corte = resto.rfind("\n", 0, MAX)
         if corte == -1:
-            corte = MAX
+            corte = resto.rfind(". ", 0, MAX)
+            if corte != -1:
+                corte += 1   # dejar el punto al final de la parte
+        if corte == -1:
+            corte = MAX      # ultimo recurso: corte duro
         partes.append(resto[:corte])
-        resto = resto[corte:].lstrip("\n")
+        resto = resto[corte:].lstrip()
     if resto:
         partes.append(resto)
+
     for i, parte in enumerate(partes, start=1):
+        if len(partes) > 1:
+            cuerpo = f"[PARTE {i}/{len(partes)}]\n{parte}"
+        else:
+            cuerpo = parte
         ok = False
         for intento in range(3):
             try:
                 r = requests.post(
                     f"https://ntfy.sh/{topic}",
-                    data=parte.encode("utf-8"),
+                    data=cuerpo.encode("utf-8"),
                     headers={"Title": f"{titulo} ({i}/{len(partes)})",
                              "Priority": "high",
                              "Tags": "chart", "Markdown": "yes"},
@@ -306,7 +320,8 @@ def main():
         trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
 
-    # 7. ntfy privado (titulo SOLO caracteres latinos, partes numeradas)
+    # 7. ntfy privado (titulo SOLO caracteres latinos, partes numeradas
+    #    y con rótulo en el cuerpo)
     topic = os.environ.get("NTFY_TOPIC_NIETO", "").strip()
     if topic:
         try:

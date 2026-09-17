@@ -36,7 +36,7 @@ import requests
 
 from perfiles import PERFILES, ORDEN
 from expediente import (leer_cartera_ram, cargar_politica, armar_expediente)
-from board import deliberar_board
+from board import deliberar_board, cargar_modelo
 
 REGISTRO_TRIGGER = "ultima_deliberacion.json"
 

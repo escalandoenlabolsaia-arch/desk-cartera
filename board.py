@@ -1,14 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-board.py — El motor de deliberacion: 9 agentes (toro/oso/juez x 3 perfiles).
+board.py — El motor de deliberacion: 3 perfiles (toro/oso/juez) + el
+FUND MANAGER (mirada libre, sin reglas del usuario).
 
-v2 (post-estreno): mensaje jerarquizado (sentencia del juez protagonista,
-toro/oso como citas de contexto), parser de veredicto en todo el texto,
-reintentos pacientes ante 429, y la linea de log publica sigue abstracta
-(sin tickers, sin perfiles asociados a veredictos).
+v4: dos novedades
+1) El FM: cuarto miembro del board. Un solo agente (sin toro/oso: su
+   valor es la mirada unica) que ademas puede recibir un bloque de
+   OPORTUNIDADES RECIENTES del detector (senales de la madre que viven en
+   el estado del hijo) para ideas de rotacion o cobertura.
+2) Mensaje ntfy SEPARADO por voz (conservador / moderado / agresivo / FM /
+   consenso): mensajes cortos y autocontenidos — fin de las partes
+   cortadas. Cada titulo identifica la voz.
 
-Contrato con main.py: deliberar_board devuelve (mensaje, linea_log,
-ok_count). main.py SOLO registra el trigger como atendido si ok_count == 3.
+El consenso cuenta 4 veredictos (3 jueces + FM). Si coinciden los cuatro,
+el mensaje lo celebra explicitamente: senal fuerte.
+
+Privacidad: los textos citan datos de la cartera -> JAMAS al log publico.
+linea_log: conteo abstracto sin tickers ni perfiles asociados.
+
+Contrato con main.py: deliberar_board devuelve (mensajes, linea_log,
+ok_count, total_voces). main.py SOLO registra el trigger si
+ok_count == total_voces.
 """
 
 import json
@@ -18,10 +30,12 @@ import time
 import requests
 
 from prompts import (prompt_sistema, prompt_usuario_toro, prompt_usuario_oso,
-                     prompt_usuario_juez, extraer_veredicto)
+                     prompt_usuario_juez, prompt_usuario_fm,
+                     extraer_veredicto)
 from perfiles import PERFILES, ORDEN
 
 DEFAULT_MODELO = "openai/gpt-oss-120b"
+FM_EMOJI = "👨‍💼"
 
 
 def cargar_modelo():
@@ -72,21 +86,18 @@ def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
 
 
 def _recortar(texto, max_lineas):
-    """Seguro local de concision (los prompts ya limitan palabras)."""
     lineas = [l.strip() for l in (texto or "").splitlines() if l.strip()]
     return "\n".join(lineas[:max_lineas])
 
 
 def _quitar_veredicto(texto):
-    """Saca la parte 'VEREDICTO: X' del cuerpo del juez (ya va en el título)."""
     partes = (texto or "").split("VEREDICTO:")
     return partes[0].strip()
 
 
-# --------------------------------------------------------------- deliberacion x perfil
+# --------------------------------------------------------------- perfil (toro/oso/juez)
 def deliberar_perfil(expediente, perfil_nombre, key, modelo):
-    """Toro -> Oso (lee al toro) -> Juez (lee ambos). Devuelve dict del
-    perfil con textos y veredicto (o None en los pasos que fallen)."""
+    """Toro -> Oso (lee al toro) -> Juez (lee ambos)."""
     res = {"perfil": perfil_nombre, "emoji": PERFILES[perfil_nombre]["emoji"],
            "toro": None, "oso": None, "juez": None, "veredicto": None}
 
@@ -113,7 +124,6 @@ def deliberar_perfil(expediente, perfil_nombre, key, modelo):
                               key, modelo, max_tokens=800)
     veredicto = extraer_veredicto(texto_juez)
     if veredicto is None:
-        # reintento unico con recordatorio de formato (no inventamos)
         texto_juez = _llamar_groq(
             sys_juez,
             prompt_usuario_juez(expediente, res["toro"], res["oso"])
@@ -123,16 +133,42 @@ def deliberar_perfil(expediente, perfil_nombre, key, modelo):
             key, modelo, max_tokens=800)
         veredicto = extraer_veredicto(texto_juez)
 
-    res["juez"] = _recortar(texto_juez, 6) if texto_juez else None
+    res["juez"] = _recortar(texto_juez, 8) if texto_juez else None
     res["veredicto"] = veredicto
     return res
 
 
+# --------------------------------------------------------------- FM (1 llamada)
+def deliberar_fm(expediente, key, modelo):
+    """El Fund Manager: UNA llamada, sin toro/oso (su valor es la mirada
+    unica y libre)."""
+    res = {"perfil": "fm", "emoji": FM_EMOJI, "texto": None, "veredicto": None}
+    sys_fm = prompt_sistema("fm", None)
+    texto = _llamar_groq(sys_fm, prompt_usuario_fm(expediente),
+                         key, modelo, max_tokens=600)
+    veredicto = extraer_veredicto(texto)
+    if veredicto is None:
+        texto = _llamar_groq(
+            sys_fm,
+            prompt_usuario_fm(expediente)
+            + "\n\nRECORDATORIO: tu respuesta DEBE incluir el veredicto "
+              "escrito como 'VEREDICTO: ACCIONAR' o 'VEREDICTO: ESPERAR' o "
+              "'VEREDICTO: REVISAR'.",
+            key, modelo, max_tokens=600)
+        veredicto = extraer_veredicto(texto)
+    res["texto"] = _recortar(texto, 10) if texto else None
+    res["veredicto"] = veredicto
+    if not texto:
+        res["fallo"] = "FM no respondio"
+    return res
+
+
 # --------------------------------------------------------------- board completo
-def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
-    """Corre los 3 perfiles. Devuelve (mensaje_ntfy, linea_log, ok_count).
-    mensaje_ntfy: contenido COMPLETO, jerarquizado (privado). linea_log:
-    conteo abstracto (publico, sin tickers ni perfiles asociados)."""
+def deliberar_board(expedientes, expediente_fm, key, modelo,
+                    trigger_log="deliberacion"):
+    """Corre 3 perfiles + FM. Devuelve (mensajes, linea_log, ok_count,
+    total_voces). mensajes: LISTA de mensajes ntfy cortos (uno por voz +
+    consenso). linea_log: conteo abstracto (publico)."""
     resultados = []
     for nombre in ORDEN:
         exp = expedientes.get(nombre)
@@ -144,56 +180,79 @@ def deliberar_board(expedientes, key, modelo, trigger_log="deliberacion"):
         resultados.append(r)
         time.sleep(5)
 
-    veredictos = [r.get("veredicto") for r in resultados]
+    res_fm = None
+    if expediente_fm is not None:
+        res_fm = deliberar_fm(expediente_fm, key, modelo)
+        time.sleep(5)
+
+    voces = resultados + ([res_fm] if res_fm is not None else [])
+    veredictos = [v.get("veredicto") for v in voces]
     validos = [v for v in veredictos if v]
-    if len(validos) == 3 and len(set(validos)) == 1:
+    total = len(voces)
+
+    if len(validos) == total and len(set(validos)) == 1 and total >= 3:
         consenso = f"UNANIMIDAD en {validos[0]}"
     elif len(validos) >= 2 and len(set(validos)) == 1:
-        consenso = f"mayoria {len(validos)}/3 en {validos[0]}"
+        consenso = f"mayoria {len(validos)}/{total} en {validos[0]}"
     elif validos:
         consenso = "sin coincidencias (" + ", ".join(
-            f"{r['emoji']}{v or '?'}" for r, v in zip(resultados, veredictos)) + ")"
+            f"{v['emoji']}{x or '?'}" for v, x in zip(voces, veredictos)) + ")"
     else:
         consenso = "sin sentencias validas"
 
-    # ---- mensaje privado jerarquizado ----
-    l = ["BOARD DE CARTERA", f"Analisis: {trigger_log}", "",
-         "=============================="]
+    # ---- mensajes privados: UNO por voz, cortos y autocontenidos ----
+    mensajes = []
     for r in resultados:
         e, nombre = r["emoji"], r["perfil"].upper()
         v = r.get("veredicto")
         etiqueta = v if v else ("SIN SENTENCIA" if not r.get("fallo") else "FALLO TECNICO")
-        l.append(f"{e} {nombre} -> {etiqueta}")
+        l = [f"{e} {nombre} -> {etiqueta}", ""]
         if r.get("fallo"):
             l.append(f"(sin deliberacion: {r['fallo']})")
         else:
             if r.get("juez"):
-                cuerpo = _quitar_veredicto(r["juez"])
+                l.append(_quitar_veredicto(r["juez"]))
                 l.append("")
-                l.append(cuerpo)
             if r.get("toro") or r.get("oso"):
-                l.append("")
                 l.append("El debate de atras:")
             if r.get("toro"):
                 l.append(f'  Toro: "{r["toro"]}"')
             if r.get("oso"):
                 l.append(f'  Oso: "{r["oso"]}"')
-        l.append("")
-        l.append("==============================")
-    l.append(f"CONSENSO DEL BOARD: {consenso}")
-    if len(validos) == 3 and len(set(validos)) < 3:
-        if len(set(validos)) == 1:
-            l.append("Los tres perfiles coinciden: señal fuerte.")
-        else:
-            l.append("Hay coincidencia parcial: la divergencia en el resto "
-                     "tambien es informacion.")
-    elif len(validos) < 3:
-        l.append("(deliberacion incompleta: los perfiles que faltan se "
-                 "recuperan en la proxima corrida)")
-    mensaje = "\n".join(l)
+        mensajes.append("\n".join(l))
 
-    # ---- linea de log PUBLICO ----
+    if res_fm is not None:
+        v = res_fm.get("veredicto")
+        etiqueta = v if v else ("SIN SENTENCIA" if not res_fm.get("fallo")
+                                else "FALLO TECNICO")
+        l = [f"{FM_EMOJI} FUND MANAGER -> {etiqueta}", ""]
+        if res_fm.get("fallo"):
+            l.append(f"(sin deliberacion: {res_fm['fallo']})")
+        elif res_fm.get("texto"):
+            l.append(_quitar_veredicto(res_fm["texto"]))
+        mensajes.append("\n".join(l))
+
+    # ---- mensaje final: consenso de las 4 voces ----
+    l = ["CONSENSO DEL BOARD",
+         " | ".join(f"{v['emoji']}{x or '?'}" for v, x in zip(voces, veredictos)),
+         ""]
+    if len(validos) == total and len(set(validos)) == 1 and total >= 3:
+        l.append(f"Los {total} coinciden en {validos[0]}: señal fuerte — "
+                 "cuando el board entero y la mirada libre apuntan al mismo "
+                 "lado, vale la pena sentarse a leerlo con calma.")
+    elif len(validos) >= 2 and len(set(validos)) == 1:
+        l.append(f"Mayoria ({len(validos)} de {total}) en {validos[0]}. "
+                 "La divergencia del resto tambien es informacion: mirala "
+                 "antes de decidir.")
+    elif validos:
+        l.append("Sin coincidencias: cada lente ve una cartera distinta. "
+                 "Esa divergencia es tu decision puesta sobre la mesa.")
+    else:
+        l.append("Sin sentencias validas esta corrida: se reintenta sola.")
+    mensajes.append("\n".join(l))
+
+    # ---- linea de log PUBLICO: abstracta ----
     ok_count = len(validos)
-    linea_log = (f"board: {ok_count}/3 perfiles deliberados | consenso: {consenso} "
-                 f"(detalle por ntfy)")
-    return mensaje, linea_log, ok_count
+    linea_log = (f"board: {ok_count}/{total} voces deliberadas | "
+                 f"consenso: {consenso} (detalle por ntfy)")
+    return mensajes, linea_log, ok_count, total

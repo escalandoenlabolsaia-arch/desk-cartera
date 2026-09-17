@@ -2,12 +2,14 @@
 """
 main.py — Orquestador del nieto (desk-cartera): el board de analistas.
 
-v4: dos mejoras de lectura del mensaje en el celular:
-  (a) el corte de partes prefiere el fin de oracion (". ") cuando el
-      parrafo no tiene saltos de linea (leccion: 'preservar ca' cortado).
-  (b) cada parte lleva su rótulo '[PARTE X/N]' al inicio del cuerpo:
-      si una parte no llega, se nota al instante (leccion: la parte del
-      medio 'desaparecida' sin que se sepa cuántas eran).
+v5: el FUND MANAGER entra al board como cuarta voz. Un agente que opina
+SIN las reglas del usuario (ni siquiera las recibe) y que ademas se nutre
+de las OPORTUNIDADES RECIENTES del detector (senales de la madre que viven
+en el estado del hijo y NO estan en la cartera): ahi nacen sus ideas de
+rotacion o cobertura. Consenso final de 4 voces.
+
+Envio: un mensaje ntfy por voz (cortos y autocontenidos, fin de las
+partes cortadas), titulos que identifican cada voz.
 
 Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
   A. FOTO NUEVA: la fecha E1 de la pestana 'cartera' cambia -> ESTRUCTURA.
@@ -16,13 +18,12 @@ Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
 
 Prioridad: A > B > C. Una deliberacion por corrida (simplicidad v1).
 REGLA DE REGISTRO: el trigger solo se marca atendido si el board delibero
-COMPLETO (3/3). Incompleto = la proxima corrida reintenta sola.
+COMPLETO (todas las voces). Incompleto = la proxima corrida reintenta sola.
 
 Privacidad (reglas de la familia):
-- La cartera vive SOLO en RAM (incluido el mapa de sectores: guardarlo
-  seria publicar la cartera). Al repo publico jamas.
-- El mensaje completo viaja por ntfy PRIVADO. El titulo viaja como
-  cabecera HTTP: solo caracteres latinos basicos.
+- La cartera vive SOLO en RAM (incluido el mapa de sectores y el bloque
+  de oportunidades: guardarlo seria publicar la cartera). Al repo jamas.
+- Los mensajes completos viajan por ntfy PRIVADO. Titulos solo latinos.
 - ultima_deliberacion.json y salidas/estado.json: solo fecha/tipo/conteos.
 - Flujo unidireccional: madre -> hijo -> nieto. Service account Lector.
 """
@@ -38,7 +39,7 @@ import requests
 from perfiles import PERFILES, ORDEN
 from expediente import (leer_cartera_ram, cargar_politica, armar_expediente,
                         obtener_sectores)
-from board import deliberar_board, cargar_modelo
+from board import deliberar_board, cargar_modelo, FM_EMOJI
 
 REGISTRO_TRIGGER = "ultima_deliberacion.json"
 
@@ -148,6 +149,31 @@ def detectar_trigger(lineas, fecha_foto, estado_hijo, ultimo):
     return None, None
 
 
+# --------------------------------------------------------------- oportunidades
+def bloque_oportunidades(estado_hijo, lineas, max_nombres=5):
+    """Bloque para el FM: senales recientes del detector (via estado del
+    hijo) que NO estan en la cartera. Devuelve (texto, count). Con 0
+    oportunidades, el FM opina igual: el bloque se lo explica."""
+    en_cartera = {l["ticker"] for l in lineas}
+    oportunidades = []
+    for e in (estado_hijo or {}).get("watchlist", []):
+        t = (e.get("ticker") or "").upper()
+        if not t or t in en_cartera:
+            continue
+        origenes = ", ".join(e.get("origen") or []) or "senal"
+        oportunidades.append(
+            f"{t} ({e.get('sector') or 'sector n/d'}): via {origenes}, "
+            f"veredicto del hijo {e.get('veredicto') or 'n/d'}, "
+            f"seguida desde {e.get('desde', 'n/d')}")
+    if not oportunidades:
+        return ("(El detector de la madre no trae oportunidades fuera de "
+                "tu cartera en este momento.)", 0)
+    texto = ("\n".join(f"- {o}" for o in oportunidades[:max_nombres])
+             + (f" (y {max(0, len(oportunidades) - max_nombres)} mas)"
+                if len(oportunidades) > max_nombres else ""))
+    return texto, min(len(oportunidades), max_nombres)
+
+
 # --------------------------------------------------------------- expedientes
 def _propuesta_estructura(fecha_foto):
     return ("Deliberar la ESTRUCTURA de la cartera segun la foto mas "
@@ -173,7 +199,6 @@ def _e_hijo_de(estado_hijo, ticker):
 
 
 def _fragil_flags(estado_hijo, lineas):
-    """Acciones de la cartera con veredicto 'fragil' del hijo."""
     tickers_acc = {l["ticker"] for l in lineas if l["tipo"] == "accion"}
     flags = []
     for e in (estado_hijo or {}).get("watchlist", []):
@@ -183,10 +208,11 @@ def _fragil_flags(estado_hijo, lineas):
     return flags
 
 
-def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
-                               tipo, detalle, sectores):
-    """Un expediente por perfil. Devuelve (expedientes, ticker_objetivo)."""
-    out = {}
+def armar_expedientes(lineas, fecha_foto, estado_hijo, politica,
+                      tipo, detalle, sectores):
+    """Expedientes de los 3 perfiles + el expediente del FM (que recibe
+    el bloque de oportunidades del detector). Devuelve (perfiles, fm,
+    ticker_objetivo)."""
     if tipo == "estructura":
         prop = _propuesta_estructura(fecha_foto)
         ticker_obj = None
@@ -196,22 +222,30 @@ def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
         prop = _propuesta_empresa(ticker, detalle, e_h)
         ticker_obj = ticker
     fragil = _fragil_flags(estado_hijo, lineas)
+
+    perfiles = {}
     for nombre in ORDEN:
-        out[nombre] = armar_expediente(lineas, fecha_foto, nombre,
-                                       PERFILES[nombre], estado_hijo,
-                                       politica, prop,
-                                       sectores=sectores, fragil_flags=fragil)
-    return out, ticker_obj
+        perfiles[nombre] = armar_expediente(lineas, fecha_foto, nombre,
+                                            PERFILES[nombre], estado_hijo,
+                                            politica, prop,
+                                            sectores=sectores,
+                                            fragil_flags=fragil)
+
+    # El expediente del FM: mismo base + bloque de oportunidades
+    fm = dict(perfiles["conservador"])   # copia con mismos datos/politica
+    oport_texto, oport_n = bloque_oportunidades(estado_hijo, lineas)
+    fm["propuesta"] = prop + (
+        "\n\nOPORTUNIDADES RECIENTES DEL DETECTOR (fuera de tu cartera; "
+        "usallas si sirven para ideas de rotacion o cobertura; si no, "
+        "ignoralas):\n" + oport_texto)
+    fm["oportunidades_n"] = oport_n
+    return perfiles, fm, ticker_obj
 
 
 # --------------------------------------------------------------- ntfy
 def enviar_ntfy(topic, texto, titulo="Board de Cartera"):
-    """Envia en partes de 2500 caracteres. El corte prefiere, en orden:
-    fin de linea -> fin de oracion ('. ') -> corte duro (ultimo recurso).
-    Cada parte (si hay mas de una) lleva el rótulo '[PARTE X/N]' al inicio
-    del cuerpo: una parte perdida se nota al instante. Titulos numerados.
-    (Los emojis y acentos valen 2-4 bytes: el limite real de ntfy es de
-    BYTES, por eso el margen de 2500 chars.)"""
+    """Un mensaje corto por voz. Corte que prefiere fin de linea y luego
+    fin de oracion. Titulo solo caracteres latinos basicos."""
     MAX = 2500
     partes, resto = [], texto
     while len(resto) > MAX:
@@ -219,26 +253,22 @@ def enviar_ntfy(topic, texto, titulo="Board de Cartera"):
         if corte == -1:
             corte = resto.rfind(". ", 0, MAX)
             if corte != -1:
-                corte += 1   # dejar el punto al final de la parte
+                corte += 1
         if corte == -1:
-            corte = MAX      # ultimo recurso: corte duro
+            corte = MAX
         partes.append(resto[:corte])
         resto = resto[corte:].lstrip()
     if resto:
         partes.append(resto)
-
     for i, parte in enumerate(partes, start=1):
-        if len(partes) > 1:
-            cuerpo = f"[PARTE {i}/{len(partes)}]\n{parte}"
-        else:
-            cuerpo = parte
+        sufijo = f" ({i}/{len(partes)})" if len(partes) > 1 else ""
         ok = False
         for intento in range(3):
             try:
                 r = requests.post(
                     f"https://ntfy.sh/{topic}",
-                    data=cuerpo.encode("utf-8"),
-                    headers={"Title": f"{titulo} ({i}/{len(partes)})",
+                    data=parte.encode("utf-8"),
+                    headers={"Title": f"{titulo}{sufijo}",
                              "Priority": "high",
                              "Tags": "chart", "Markdown": "yes"},
                     timeout=30,
@@ -307,39 +337,42 @@ def main():
     total_acc = sum(1 for l in lineas if l["tipo"] == "accion")
     print(f"sectores: {resueltos}/{total_acc} acciones clasificadas (RAM)")
 
-    # 5. expedientes (uno por perfil)
-    expedientes, ticker_objetivo = armar_expedientes_perfiles(
+    # 5. expedientes: 3 perfiles + FM (con oportunidades del detector)
+    perfiles_exp, fm_exp, ticker_objetivo = armar_expedientes(
         lineas, fecha_foto, estado_hijo, politica, tipo, detalle, sectores)
-    print(f"trigger: {tipo} | expedientes armados: {len(expedientes)}")
+    oport = fm_exp.get("oportunidades_n") or 0
+    print(f"trigger: {tipo} | expedientes: 3 perfiles + FM "
+          f"(oportunidades del detector: {oport})")
 
-    # 6. board (9 agentes)
+    # 6. board (3 perfiles + fund manager)
     key = os.environ.get("GROQ_API_KEY", "").strip()
     modelo = cargar_modelo()
-    mensaje, linea_log, ok_count = deliberar_board(
-        expedientes, key, modelo,
+    mensajes, linea_log, ok_count, total_voces = deliberar_board(
+        perfiles_exp, fm_exp, key, modelo,
         trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
 
-    # 7. ntfy privado (titulo SOLO caracteres latinos, partes numeradas
-    #    y con rótulo en el cuerpo)
+    # 7. ntfy privado: un mensaje por voz, titulos que identifican
     topic = os.environ.get("NTFY_TOPIC_NIETO", "").strip()
     if topic:
         try:
-            enviar_ntfy(topic, mensaje,
-                        titulo=f"Board - {tipo}: {ticker_objetivo or 'estructura'}")
-            print("ntfy: deliberacion enviada")
+            titulos = [f"Board - {t.upper()}"
+                       for t in list(ORDEN) + ["FM", "consenso"]]
+            for titulo, mensaje in zip(titulos, mensajes):
+                enviar_ntfy(topic, mensaje, titulo=titulo)
+            print(f"ntfy: {len(mensajes)} mensajes enviados")
         except Exception as e:
             print(f"  AVISO: ntfy fallo ({type(e).__name__}); la corrida sigue")
     else:
         print("  AVISO: sin NTFY_TOPIC_NIETO: deliberacion NO enviada")
 
-    # 8. registro: SOLO con board completo (3/3). Incompleto = reintento
-    # automatico en la proxima corrida.
-    if ok_count == 3:
+    # 8. registro: SOLO con board completo (todas las voces). Incompleto =
+    # el trigger queda vivo y la proxima corrida reintenta sola.
+    if ok_count == total_voces:
         guardar_ultimo(tipo, fecha_foto if tipo == "estructura" else None)
     else:
-        print(f"  AVISO: board incompleto ({ok_count}/3): NO registro el "
-              f"trigger -> la proxima corrida reintenta")
+        print(f"  AVISO: board incompleto ({ok_count}/{total_voces}): NO "
+              f"registro el trigger -> la proxima corrida reintenta")
 
     # 9. estado publico
     publicar_estado(tipo, linea_log, len(estado_hijo.get("watchlist", [])))

@@ -62,7 +62,7 @@ def _llamar_groq(sys_prompt, user_prompt, key, modelo, max_tokens):
         r.raise_for_status()
         return (r.json()["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
-        print(f"  Groq fallo ({type(e).__name__})")
+                print(f"  Groq fallo: {e}")
         return None
 
 

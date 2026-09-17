@@ -9,7 +9,6 @@ Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
      en una accion de la cartera -> board sobre ESA empresa.
   C. EVENTO: earnings en <= 7 dias de una accion del nucleo -> board sobre
      ESA empresa.
-  D. (el boton manual del workflow fuerza A si no hay otra cosa.)
 
 Prioridad: A > B > C. Una deliberacion por corrida (simplicidad v1).
 
@@ -17,7 +16,8 @@ Privacidad (reglas de la familia):
 - La cartera vive SOLO en RAM. Al repo publico jamas: ni expedientes, ni
   textos de agentes, ni pesos. ultima_deliberacion.json guarda SOLO fecha
   y tipo de trigger (nada de contenido).
-- El mensaje completo viaja por ntfy PRIVADO (topic del nieto).
+- El mensaje completo viaja por ntfy PRIVADO (topic del nieto). El titulo
+  viaja como cabecera HTTP (solo caracteres latinos basicos: sin em-dash).
 - El estado publico propio (salidas/estado.json) lleva conteos abstractos.
 
 Reglas de la familia:
@@ -122,7 +122,8 @@ def _nucleo(lineas):
 
 def detectar_trigger(lineas, fecha_foto, estado_hijo, ultimo):
     """Prioridad: foto nueva > senal sobre nucleo > earnings <= 7 dias.
-    Devuelve (tipo, detalle) o (None, None) = silencio."""
+    Devuelve (tipo, detalle) o (None, None) = silencio. El detalle de los
+    triggers B/C empieza SIEMPRE con el ticker (main lo parsea)."""
     nucleo = set(_nucleo(lineas))
     watch = (estado_hijo or {}).get("watchlist") or []
 
@@ -176,8 +177,7 @@ def _e_hijo_de(estado_hijo, ticker):
 
 def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
                                tipo, detalle):
-    """Un expediente por perfil. Devuelve (expedientes, ticker_objetivo).
-    El ticker objetivo sale del detalle (formato: 'TICKER ...')."""
+    """Un expediente por perfil. Devuelve (expedientes, ticker_objetivo)."""
     out = {}
     if tipo == "estructura":
         prop = _propuesta_estructura(fecha_foto)
@@ -287,10 +287,10 @@ def main():
     modelo = cargar_modelo()
     mensaje, linea_log = deliberar_board(
         expedientes, key, modelo,
-        trigger_log=f"{tipo} — {detalle}")
+        trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
 
-    # 6. ntfy privado (contenido completo)
+    # 6. ntfy privado (contenido completo; titulo SOLO caracteres latinos)
     topic = os.environ.get("NTFY_TOPIC_NIETO", "").strip()
     if topic:
         try:

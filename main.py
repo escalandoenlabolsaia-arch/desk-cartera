@@ -2,32 +2,24 @@
 """
 main.py — Orquestador del nieto (desk-cartera): el board de analistas.
 
+v2 (post-estreno): sectores REALES por nombre (expediente.py los baja en
+RAM), fragil-flags del hijo integrados a las reglas, y la regla de registro
+aprendida: el trigger solo se marca atendido si el board delibero 3/3.
+
 Triggers de deliberacion (si no hay ninguno: corrida liviana, sin LLM):
-  A. FOTO NUEVA: la fecha E1 de la pestana 'cartera' cambia respecto de la
-     ultima deliberacion -> board ESTRUCTURAL (todo el portafolio).
-  B. SENAL DEL HIJO SOBRE EL NUCLEO: el estado del hijo tiene senales_hoy
-     en una accion de la cartera -> board sobre ESA empresa.
-  C. EVENTO: earnings en <= 7 dias de una accion del nucleo -> board sobre
-     ESA empresa.
+  A. FOTO NUEVA: la fecha E1 de la pestana 'cartera' cambia -> ESTRUCTURA.
+  B. SENAL DEL HIJO SOBRE EL NUCLEO -> board sobre ESA empresa.
+  C. EVENTO: earnings en <= 7 dias de una accion del nucleo -> ESA empresa.
 
 Prioridad: A > B > C. Una deliberacion por corrida (simplicidad v1).
-REGLA DE REGISTRO: el trigger solo se marca como atendido si el board
-delibero COMPLETO (3/3 perfiles). Una deliberacion incompleta (ej: 429 de
-Groq) NO se registra -> la proxima corrida reintenta sola. Leccion del
-estreno: un fallo tecnico nunca debe consumir un trigger.
 
 Privacidad (reglas de la familia):
-- La cartera vive SOLO en RAM. Al repo publico jamas: ni expedientes, ni
-  textos de agentes, ni pesos. ultima_deliberacion.json guarda SOLO fecha
-  y tipo de trigger (nada de contenido).
-- El mensaje completo viaja por ntfy PRIVADO (topic del nieto). El titulo
-  viaja como cabecera HTTP (solo caracteres latinos basicos: sin em-dash).
-- El estado publico propio (salidas/estado.json) lleva conteos abstractos.
-
-Reglas de la familia:
-- Flujo unidireccional: madre -> hijo -> nieto. El nieto nunca escribe
-  aguas arriba y su service account es Lector de la hoja.
-- Cada capa con try/except propio: la corrida degrada, no muere.
+- La cartera vive SOLO en RAM (incluido el mapa de sectores: guardarlo
+  seria publicar la cartera). Al repo publico jamas.
+- El mensaje completo viaja por ntfy PRIVADO. El titulo viaja como
+  cabecera HTTP: solo caracteres latinos basicos.
+- ultima_deliberacion.json y salidas/estado.json: solo fecha/tipo/conteos.
+- Flujo unidireccional: madre -> hijo -> nieto. Service account Lector.
 """
 
 import json
@@ -39,7 +31,8 @@ import gspread
 import requests
 
 from perfiles import PERFILES, ORDEN
-from expediente import (leer_cartera_ram, cargar_politica, armar_expediente)
+from expediente import (leer_cartera_ram, cargar_politica, armar_expediente,
+                        obtener_sectores)
 from board import deliberar_board, cargar_modelo
 
 REGISTRO_TRIGGER = "ultima_deliberacion.json"
@@ -90,8 +83,7 @@ def descargar_estado_hijo(cfg):
 
 # --------------------------------------------------------------- hoja
 def conectar_hoja(cfg):
-    """Service account del nieto (Lector). Devuelve spreadsheet. Jamas
-    escribe: la cuenta no tiene permiso de escritura por diseno de Google."""
+    """Service account del nieto (Lector). Jamas escribe."""
     cred = json.loads(os.environ["GSA_JSON_NIETO"])
     sheet_id = os.environ["SHEET_ID_NIETO"].strip()
     gc = gspread.service_account_from_dict(cred)
@@ -112,8 +104,7 @@ def cargar_ultimo():
 
 
 def guardar_ultimo(tipo, fecha_foto):
-    """Registro MINIMO: fecha y tipo del trigger. JAMAS contenido de
-    cartera (este archivo se commitea en el repo publico)."""
+    """Registro MINIMO: fecha y tipo del trigger. JAMAS contenido."""
     with open(REGISTRO_TRIGGER, "w", encoding="utf-8") as f:
         json.dump({"tipo": tipo, "fecha_foto": fecha_foto,
                    "fecha": date.today().isoformat()}, f,
@@ -126,22 +117,18 @@ def _nucleo(lineas):
 
 def detectar_trigger(lineas, fecha_foto, estado_hijo, ultimo):
     """Prioridad: foto nueva > senal sobre nucleo > earnings <= 7 dias.
-    Devuelve (tipo, detalle) o (None, None) = silencio. El detalle de los
-    triggers B/C empieza SIEMPRE con el ticker (main lo parsea)."""
+    El detalle de B/C empieza SIEMPRE con el ticker (main lo parsea)."""
     nucleo = set(_nucleo(lineas))
     watch = (estado_hijo or {}).get("watchlist") or []
 
-    # A. foto nueva de cartera
     if fecha_foto and fecha_foto != ultimo.get("fecha_foto"):
         return "estructura", "foto nueva de cartera"
 
-    # B. senal del hijo sobre una accion del nucleo
     for e in watch:
         t = (e.get("ticker") or "").upper()
         if t in nucleo and (e.get("senales_hoy") or []):
             return "senal", f"{t} senal del hijo (nucleo)"
 
-    # C. earnings de una accion del nucleo en <= 7 dias
     for e in watch:
         t = (e.get("ticker") or "").upper()
         if t not in nucleo or not e.get("proximo_earnings"):
@@ -159,10 +146,11 @@ def detectar_trigger(lineas, fecha_foto, estado_hijo, ultimo):
 # --------------------------------------------------------------- expedientes
 def _propuesta_estructura(fecha_foto):
     return ("Deliberar la ESTRUCTURA de la cartera segun la foto mas "
-            f"reciente ({fecha_foto}): concentraciones, colchon, sectores, "
-            "y las acciones del nucleo que el hijo sigue. Proponé movimientos "
-            "solo si hay violaciones o bordes; si todo OK, sentencia ESPERAR "
-            "con el punto que mas importe.")
+            f"reciente ({fecha_foto}): concentraciones (nombrando sector), "
+            "colchon, sectores, y las acciones del nucleo que el hijo "
+            "sigue. Proponé movimientos solo si hay reglas incumplidas o "
+            "en borde; si todo OK, sentencia ESPERAR con el punto que mas "
+            "importe.")
 
 
 def _propuesta_empresa(ticker, detalle, e_hijo):
@@ -179,26 +167,36 @@ def _e_hijo_de(estado_hijo, ticker):
     return {}
 
 
+def _fragil_flags(estado_hijo, lineas):
+    """Acciones de la cartera con veredicto 'fragil' del hijo."""
+    tickers_acc = {l["ticker"] for l in lineas if l["tipo"] == "accion"}
+    flags = []
+    for e in (estado_hijo or {}).get("watchlist", []):
+        t = (e.get("ticker") or "").upper()
+        if t in tickers_acc and e.get("veredicto") == "fragil":
+            flags.append(f"{t} score fragil en el hijo")
+    return flags
+
+
 def armar_expedientes_perfiles(lineas, fecha_foto, estado_hijo, politica,
-                               tipo, detalle):
+                               tipo, detalle, sectores):
     """Un expediente por perfil. Devuelve (expedientes, ticker_objetivo)."""
     out = {}
     if tipo == "estructura":
         prop = _propuesta_estructura(fecha_foto)
-        for nombre in ORDEN:
-            out[nombre] = armar_expediente(lineas, fecha_foto, nombre,
-                                           PERFILES[nombre], estado_hijo,
-                                           politica, prop)
-        return out, None
-    # senal o evento: el detalle empieza con el ticker
-    ticker = detalle.split()[0].upper()
-    e_h = _e_hijo_de(estado_hijo, ticker)
-    prop = _propuesta_empresa(ticker, detalle, e_h)
+        ticker_obj = None
+    else:
+        ticker = detalle.split()[0].upper()
+        e_h = _e_hijo_de(estado_hijo, ticker)
+        prop = _propuesta_empresa(ticker, detalle, e_h)
+        ticker_obj = ticker
+    fragil = _fragil_flags(estado_hijo, lineas)
     for nombre in ORDEN:
         out[nombre] = armar_expediente(lineas, fecha_foto, nombre,
                                        PERFILES[nombre], estado_hijo,
-                                       politica, prop)
-    return out, ticker
+                                       politica, prop,
+                                       sectores=sectores, fragil_flags=fragil)
+    return out, ticker_obj
 
 
 # --------------------------------------------------------------- ntfy
@@ -281,12 +279,19 @@ def main():
                         len(estado_hijo.get("watchlist", [])))
         return
 
-    # 4. expedientes (uno por perfil)
+    # 4. sectores reales en RAM (gratis del hijo, yfinance para el resto)
+    sectores = obtener_sectores(lineas, estado_hijo)
+    resueltos = sum(1 for l in lineas
+                    if l["tipo"] == "accion" and l["ticker"] in sectores)
+    total_acc = sum(1 for l in lineas if l["tipo"] == "accion")
+    print(f"sectores: {resueltos}/{total_acc} acciones clasificadas (RAM)")
+
+    # 5. expedientes (uno por perfil)
     expedientes, ticker_objetivo = armar_expedientes_perfiles(
-        lineas, fecha_foto, estado_hijo, politica, tipo, detalle)
+        lineas, fecha_foto, estado_hijo, politica, tipo, detalle, sectores)
     print(f"trigger: {tipo} | expedientes armados: {len(expedientes)}")
 
-    # 5. board (9 agentes)
+    # 6. board (9 agentes)
     key = os.environ.get("GROQ_API_KEY", "").strip()
     modelo = cargar_modelo()
     mensaje, linea_log, ok_count = deliberar_board(
@@ -294,7 +299,7 @@ def main():
         trigger_log=f"{tipo} - {detalle}")
     print(linea_log)
 
-    # 6. ntfy privado (contenido completo; titulo SOLO caracteres latinos)
+    # 7. ntfy privado (titulo SOLO caracteres latinos)
     topic = os.environ.get("NTFY_TOPIC_NIETO", "").strip()
     if topic:
         try:
@@ -306,15 +311,15 @@ def main():
     else:
         print("  AVISO: sin NTFY_TOPIC_NIETO: deliberacion NO enviada")
 
-    # 7. registro: SOLO si el board delibero completo (3/3). Incompleto =
-    # el trigger queda vivo y la proxima corrida reintenta sola.
+    # 8. registro: SOLO con board completo (3/3). Incompleto = reintento
+    # automatico en la proxima corrida.
     if ok_count == 3:
         guardar_ultimo(tipo, fecha_foto if tipo == "estructura" else None)
     else:
         print(f"  AVISO: board incompleto ({ok_count}/3): NO registro el "
               f"trigger -> la proxima corrida reintenta")
 
-    # 8. estado publico
+    # 9. estado publico
     publicar_estado(tipo, linea_log, len(estado_hijo.get("watchlist", [])))
     print("estado.json del nieto publicado")
 

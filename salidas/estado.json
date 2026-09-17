@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "fecha": "2026-09-17",
+  "corrida_ok": true,
+  "ultima_deliberacion": {
+    "tipo": "estructura",
+    "linea_log": "board: 0/3 perfiles deliberados | consenso: sin sentencias validas (detalle por ntfy)"
+  },
+  "resumen": {
+    "empresas_en_estado_hijo": 0
+  }
+}

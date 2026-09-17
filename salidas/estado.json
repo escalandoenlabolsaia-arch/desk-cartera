@@ -4,7 +4,7 @@
   "corrida_ok": true,
   "ultima_deliberacion": {
     "tipo": "estructura",
-    "linea_log": "board: 3/3 perfiles deliberados | consenso: sin coincidencias (🛡️REVISAR, ⚖️ESPERAR, 🚀ESPERAR) (detalle por ntfy)"
+    "linea_log": "board: 3/3 perfiles deliberados | consenso: sin coincidencias (🛡️ACCIONAR, ⚖️ESPERAR, 🚀ACCIONAR) (detalle por ntfy)"
   },
   "resumen": {
     "empresas_en_estado_hijo": 0

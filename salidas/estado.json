@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "fecha": "2026-09-17",
+  "fecha": "2026-09-21",
   "corrida_ok": true,
   "ultima_deliberacion": {
-    "tipo": "estructura",
-    "linea_log": "board: 4/4 voces deliberadas | consenso: sin coincidencias (🛡️ACCIONAR, ⚖️REVISAR, 🚀ESPERAR, 👨‍💼ESPERAR) (detalle por ntfy)"
+    "tipo": null,
+    "linea_log": "sin deliberacion"
   },
   "resumen": {
     "empresas_en_estado_hijo": 0
